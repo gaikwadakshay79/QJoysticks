@@ -37,6 +37,13 @@ add_library(QJoysticks ${QJ_LIB_TYPE}
     src/QJoysticks/SDL_Joysticks.cpp
     src/QJoysticks/VirtualJoystick.cpp)
 
+# MinGW prefixes DLLs with "lib" by default, unlike MSVC. Keep the runtime
+# filename identical across both Windows toolchains; the MinGW import library
+# retains its conventional libQJoysticks.dll.a name.
+if(WIN32 AND QJOYSTICKS_BUILD_SHARED)
+    set_target_properties(QJoysticks PROPERTIES PREFIX "")
+endif()
+
 target_include_directories(QJoysticks
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
