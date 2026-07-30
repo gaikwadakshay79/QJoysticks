@@ -43,6 +43,3 @@ SOURCES += \
     $$PWD/src/QJoysticks/VirtualJoystick.cpp \
     $$PWD/src/QJoysticks/Android_Joystick.cpp
 
-RESOURCES += \
-    $$PWD/etc/resources/qjoysticks-res.qrc
-

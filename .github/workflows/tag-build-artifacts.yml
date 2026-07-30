@@ -282,9 +282,116 @@ jobs:
             diagnostics/exports.txt
           if-no-files-found: error
 
+  build-windows-mingw:
+    name: Windows x64 MinGW (SDL2 embedded .dll)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt ${{ env.QT_VERSION }} (MinGW)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_mingw
+          tools: 'tools_mingw1310'
+          cache: true
+
+      - name: Install static SDL2 (vcpkg, mingw)
+        shell: pwsh
+        run: '& "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install sdl2:x64-mingw-static --clean-after-build'
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $mingwBin = Join-Path $env:IQTA_TOOLS 'mingw1310_64\bin'
+          $env:PATH = "$mingwBin;$env:PATH"
+          $toolchain = Join-Path $env:VCPKG_INSTALLATION_ROOT 'scripts/buildsystems/vcpkg.cmake'
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_C_COMPILER=gcc `
+            -DCMAKE_CXX_COMPILER=g++ `
+            -DQJOYSTICKS_BUILD_SHARED=ON `
+            -DVCPKG_TARGET_TRIPLET=x64-mingw-static `
+            "-DCMAKE_TOOLCHAIN_FILE=$toolchain"
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $mingwBin = Join-Path $env:IQTA_TOOLS 'mingw1310_64\bin'
+          $env:PATH = "$mingwBin;$env:PATH"
+          cmake --build build --parallel
+
+      - name: Validate self-contained .dll
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mingwBin = Join-Path $env:IQTA_TOOLS 'mingw1310_64\bin'
+          $env:PATH = "$mingwBin;$env:PATH"
+          $dll = 'build/QJoysticks.dll'
+          if (-not (Test-Path $dll)) { throw 'QJoysticks.dll not found' }
+          New-Item -ItemType Directory -Force -Path diagnostics | Out-Null
+
+          # 1) Imports: SDL2 must be embedded. Qt and the runtime stay
+          #    dynamic by design - the consumer is a Qt/MinGW app and
+          #    already ships those.
+          $deps = & objdump -p $dll | Select-String 'DLL Name'
+          $deps | Out-File diagnostics\dependents.txt
+          Write-Host ($deps -join "`n")
+          if ($deps | Select-String -Pattern '(?i)sdl2') {
+            Write-Host 'SDL2.dll import found - SDL2 was not statically embedded'
+            exit 1
+          }
+          if (-not ($deps | Select-String -Pattern '(?i)Qt6Core')) {
+            Write-Host 'Qt6Core.dll import missing - unexpected linkage'
+            exit 1
+          }
+
+          # 2) Exports: C++ API present, SDL2 internals hidden.
+          $exports = & objdump -p $dll
+          $exports | Out-File diagnostics\exports.txt
+          if (-not (Select-String -InputObject ($exports -join "`n") -Pattern 'QJoysticks')) {
+            Write-Host 'QJoysticks C++ API not exported'
+            exit 1
+          }
+          if (Select-String -InputObject ($exports -join "`n") -Pattern '\bSDL_[A-Za-z]') {
+            Write-Host 'SDL2 symbols leaked out of the library'
+            exit 1
+          }
+
+          # 3) Package.
+          New-Item -ItemType Directory -Force -Path dist\include\QJoysticks | Out-Null
+          Copy-Item $dll dist\
+          Copy-Item build\libQJoysticks.dll.a dist\QJoysticks.lib
+          Copy-Item src\QJoysticks.h dist\include\
+          Copy-Item src\QJoysticks\JoysticksCommon.h dist\include\QJoysticks\
+          @(
+            'target_os=windows'
+            'target_arch=x64'
+            "qt_version=$env:QT_VERSION (dynamic - consumer app provides Qt >= this version, MinGW build)"
+            "sdl2_version=$env:SDL2_VERSION (statically embedded)"
+            'toolchain=mingw'
+            "git_commit=$env:GITHUB_SHA"
+            "build_timestamp=$([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+          ) | Out-File dist\BUILD-MANIFEST.txt
+          Compress-Archive -Path dist\* -DestinationPath qjoysticks-windows-x64-mingw.zip
+
+      - name: Upload Windows MinGW package
+        uses: actions/upload-artifact@v4
+        with:
+          name: qjoysticks-windows-x64-mingw.zip
+          path: |
+            qjoysticks-windows-x64-mingw.zip
+            diagnostics/dependents.txt
+            diagnostics/exports.txt
+          if-no-files-found: error
+
   release:
     name: Create GitHub Release (single SDK zip)
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, build-windows-mingw]
     runs-on: ubuntu-22.04
     steps:
       - name: Download Linux x86_64 artifact
@@ -305,6 +412,12 @@ jobs:
           name: qjoysticks-windows-x64.zip
           path: dl/win64
 
+      - name: Download Windows x64 MinGW artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: qjoysticks-windows-x64-mingw.zip
+          path: dl/win64_mingw
+
       - name: Assemble single SDK package
         shell: bash
         run: |
@@ -315,8 +428,9 @@ jobs:
           #   lib/include/QJoysticks/JoysticksCommon.h
           #   lib/linux_x86/libQJoysticks.so   (+ manifest)
           #   lib/linux_aarch/libQJoysticks.so (+ manifest)
-          #   lib/win64/QJoysticks.dll + QJoysticks.lib (+ manifest)
-          mkdir -p lib/linux_x86 lib/linux_aarch lib/win64
+          #   lib/win64/QJoysticks.dll + QJoysticks.lib (+ manifest, MSVC)
+          #   lib/win64_mingw/QJoysticks.dll + QJoysticks.lib (+ manifest, MinGW)
+          mkdir -p lib/linux_x86 lib/linux_aarch lib/win64 lib/win64_mingw
 
           tar xzf dl/x86_64/qjoysticks-linux-x86_64.tar.gz -C dl/x86_64
           cp dl/x86_64/libQJoysticks.so dl/x86_64/BUILD-MANIFEST.txt lib/linux_x86/
@@ -328,6 +442,11 @@ jobs:
           cp dl/win64/extracted/QJoysticks.dll \
              dl/win64/extracted/QJoysticks.lib \
              dl/win64/extracted/BUILD-MANIFEST.txt lib/win64/
+
+          unzip -q dl/win64_mingw/qjoysticks-windows-x64-mingw.zip -d dl/win64_mingw/extracted
+          cp dl/win64_mingw/extracted/QJoysticks.dll \
+             dl/win64_mingw/extracted/QJoysticks.lib \
+             dl/win64_mingw/extracted/BUILD-MANIFEST.txt lib/win64_mingw/
 
           # One shared header set (identical across platforms).
           cp -r dl/x86_64/include lib/include

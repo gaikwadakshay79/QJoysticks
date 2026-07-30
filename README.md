@@ -91,5 +91,9 @@ QJoysticks::getInstance()->setVirtualJoystickAxisRange (0.8);
 
 You cannot customize the axis range of the SDL joysticks.
 
+Physical devices are reported in raw SDL joystick order. QJoysticks does not
+apply SDL game-controller database mappings, so `getNumAxes()` and the axis IDs
+reported by `axisChanged()` always refer to the same physical axis array.
+
 ## License
 This project is licensed under the MIT license. For more information, check the [LICENSE](LICENSE.md) file.

@@ -35,8 +35,7 @@ endif()
 add_library(QJoysticks ${QJ_LIB_TYPE}
     src/QJoysticks.cpp
     src/QJoysticks/SDL_Joysticks.cpp
-    src/QJoysticks/VirtualJoystick.cpp
-    etc/resources/qjoysticks-res.qrc)
+    src/QJoysticks/VirtualJoystick.cpp)
 
 target_include_directories(QJoysticks
     PUBLIC
